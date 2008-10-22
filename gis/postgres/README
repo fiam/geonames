@@ -1,0 +1,40 @@
+If you need to process GIS data, follow these
+instructions. Note you don't need this
+if you are not going to do proximity searches.
+Note you need to do this before importing
+any data.
+
+First of all, you need postgis, which adds
+support for GIS data types to postgresql.
+Some distributions include packages, but if
+that's not the case for you, download
+it from http://postgis.refractions.net/
+and follow the installation instructions
+from the documentation.
+
+Next, execute the following commands
+(add username/password/host as needed):
+
+createlang plpgsql [yourdatabase]
+psql -d [yourdatabase] -f lwpostgis.sql
+psql -d [yourdatabase] -f spatial_ref_sys.sql
+
+(lwpostgis.sql and spatial_ref_sys.sql are distributed
+with postgis)
+
+This will create the spatial fields as well
+as a trigger for keeping them updated.
+psql -d [yourdatabase] < points.sql
+
+Finally, after importing the database, run:
+
+psql -d [yourdatabase] < indexes.sql
+
+This will create the indexes for the
+spatial fields.
+
+If you are doing only proximity searches,
+you should also cluster the table "geoname"
+according to the "geoname_point" index:
+(from psql console)
+CLUSTER geoname_point ON geoname;

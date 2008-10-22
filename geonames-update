@@ -1,0 +1,196 @@
+#!/usr/bin/python
+
+# This file is part of Django-Geonames
+# Copyright (c) 2008, Alberto Garcia Hierro
+# See LICENSE file for details
+
+UPDATE_SERVER_URI = 'http://abra.rm-fr.net/~fiam/geonames/'
+
+import os
+import sys
+import urllib2
+from warnings import filterwarnings
+from optparse import OptionParser
+from datetime import date, timedelta
+
+def get_file_fd(base_name, update_date):
+    uri = '%(base_uri)s/%(base_name)s/%(base_name)s-%(date)s.txt' % \
+        {   'base_uri': UPDATE_SERVER_URI,
+            'base_name': base_name,
+            'date': update_date.isoformat()
+        }  
+
+    try:
+        fd = urllib2.urlopen(uri)
+        return fd
+    except urllib2.HTTPError:
+        print 'Cannot fetch updates for %s at %s. Exiting.' % (base_name, update_date)
+        sys.exit(1)
+
+def apply_deletion(fd, klass):
+    for line in fd.readlines():
+        line = line[:-1]
+        fields = line.split('\t')
+        pk = fields[0]
+        try:
+            obj = klass.objects.get(pk=pk)
+            obj.delete()
+        except klass.DoesNotExist:
+            pass 
+    fd.close()
+
+def apply_geonames_modifications(fd):
+    from geonames.models import Geoname, Country, Admin1Code, Admin2Code, Admin3Code, Admin4Code, Timezone
+    for line in fd.readlines():
+        line = line[:-1]
+        fields = line.split('\t')
+        try:
+            obj = Geoname.objects.get(pk=fields[0])
+        except Geoname.DoesNotExist:
+            obj = Geoname(pk=fields[0])
+        obj.name = fields[1]
+        obj.ascii_name = fields[2]
+        obj.latitude = float(fields[4])
+        obj.longitude = float(fields[5])
+        obj.fclass = fields[6]
+        obj.fcode = fields[7]
+        obj.country = Country.objects.get(pk=fields[8])
+        obj.cc2 = fields[9]
+        
+        if obj.fcode == 'ADM1':
+            try:
+                adm = Admin1Code.objects.get(geoname=obj)
+            except Admin1Code.DoesNotExist:
+                adm = Admin1Code(geoname=obj)
+            adm.name = obj.name
+            adm.ascii_name = obj.ascii_name
+            adm.country = obj.country
+            adm.code = fields[10]
+            adm.save()
+        if obj.fcode == 'ADM2':
+            try:
+                adm = Admin2.objects.get(geoname=obj)
+            except Admin2Code.DoesNotExist:
+                adm = Admin2Code(geoname=obj)
+            adm.name = obj.name
+            adm.ascii_name = obj.ascii_name
+            adm.country = obj.country
+            adm.code = fields[11]
+            adm.save()
+        if obj.fcode == 'ADM3':
+            try:
+                adm = Admin3Code.objects.get(geoname=obj)
+            except Admin3Code.DoesNotExist:
+                adm = Admin3Code(geoname=obj)
+            adm.name = obj.name
+            adm.ascii_name = obj.ascii_name
+            adm.country = obj.country
+            adm.code = fields[12]
+            adm.save()
+        if obj.fcode == 'ADM4':
+            try:
+                adm = Admin4Code.objects.get(geoname=obj)
+            except Admin4Code.DoesNotExist:
+                adm = Admin4Code(geoname=obj)
+            adm.name = obj.name
+            adm.ascii_name = obj.ascii_name
+            adm.country = obj.country
+            adm.code = fields[13]
+            adm.save()
+
+        obj.admin1, obj.admin2, obj.admin3, obj.admin4 = [None] * 4
+        if fields[10]:
+            try:
+                obj.admin1 = Admin1Code.objects.get(country=obj.country, code=fields[10])
+            except Admin1Code.DoesNotExist:
+                pass
+        if fields[11]:
+            try:
+                obj.admin2 = Admin2Code.objects.get(country=obj.country, admin1=obj.admin1, code=fields[11])
+            except Admin2Code.DoesNotExist:
+                pass
+        if fields[12]:
+            try:
+                obj.admin3 = Admin3Code.objects.get(country=obj.country, admin1=obj.admin1, admin2=obj.admin2, code=fields[12])
+            except Admin3Code.DoesNotExist:
+                pass
+        if fields[13]:
+            try:
+                obj.admin4 = Admin4Code.objects.get(country=obj.country, admin1=obj.admin1, admin2=obj.admin2, admin3=obj.admin3, code=fields[13])
+            except Admin4Code.DoesNotExist:
+                pass
+        obj.population = int(fields[14] or 0)
+        obj.elevation = int(fields[15] or 0)
+        obj.gtopo30 = int(fields[16] or 0)
+        try:
+            obj.timezone = Timezone.objects.get(name=fields[17])
+        except Timezone.DoesNotExist:
+            obj.timezone = None
+        obj.moddate = date(*[int(x) for x in fields[18].split('-')])
+        obj.save()
+
+
+    fd.close()
+
+def apply_altnames_modifications(fd):
+    from geonames.models import Geoname, GeonameAlternateName
+    for line in fd.readlines():
+        line = line[:-1]
+        fields = line.split('\t')
+        try:
+            obj = GeonameAlternateName.objects.get(pk=fields[0])
+        except GeonameAlternateName.DoesNotExist:
+            obj = GeonameAlternateName(pk=fields[0])
+        obj.geoname = Geoname.objects.get(pk=fields[1])
+        obj.language = fields[2]
+        obj.name = fields[3]
+        obj.preferred = int(fields[4] or 0)
+        obj.short = int(fields[5] or 0)
+        obj.save()
+
+    fd.close()
+    
+
+def main():
+    parser = OptionParser()
+
+    parser.add_option('-s', '--settings', action='store', type='string', dest='settings', default='settings')
+
+    (options, args) = parser.parse_args(sys.argv)
+
+    prg_name = sys.argv[0]
+    if prg_name[0] == '.':
+        prg_name = prg_name[1:]
+    app_dir = os.path.dirname(os.getcwd() + '/' + prg_name)
+    app_dir = app_dir.replace('//', '/')
+    proj_dir = '/'.join(app_dir.split('/')[:-1])
+    sys.path.append(proj_dir)
+
+    proj_settings = __import__(options.settings)
+    from django.core.management import setup_environ
+    setup_environ(proj_settings)
+    from django.conf import settings
+    from geonames.models import Geoname, GeonameAlternateName, GeonamesUpdate
+
+    filterwarnings(action='ignore', message='.*Field \'gpoint\' doesn\'t have a default value.*')
+    try:
+        updated_date = GeonamesUpdate.objects.latest('updated_date').updated_date
+    except GeonamesUpdate.DoesNotExist:
+        print 'Cannot find last update date'
+        sys.exit(1)
+
+    today = date.today()
+    while updated_date != today:
+        print 'Applying updates for ', updated_date
+        for deletion, klass in [('deletes', Geoname), ('alternateNamesDeletes', GeonameAlternateName)]:
+            fd = get_file_fd(deletion, updated_date)
+            apply_deletion(fd, klass)
+            fd = get_file_fd('modifications', updated_date)
+        apply_geonames_modifications(fd)
+        fd = get_file_fd('alternateNamesModifications', updated_date)
+        apply_altnames_modifications(fd)
+        updated_date += timedelta(days=1)
+        GeonamesUpdate.objects.create(updated_date=updated_date)
+
+if __name__ == '__main__':
+    main()
