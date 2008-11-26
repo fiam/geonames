@@ -1,4 +1,5 @@
 /* this column is added for better performance in proximity searches */
+SELECT AddGeometryColumn('geoname', 'gpoint', 4326, 'POINT', 2);
 SELECT AddGeometryColumn('geoname', 'gpoint_meters', 32661, 'POINT', 2);
 CREATE FUNCTION geoname_points () RETURNS trigger AS $geoname_points$
     BEGIN
