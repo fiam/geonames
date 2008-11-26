@@ -231,7 +231,7 @@ class GeonamesImporter(object):
         line = fd.readline()[:-1]
         while line:
             codes, name, ascii_name, geoname_id = line.split('\t')
-            country_id, adm1, code = codes.split('.')
+            country_id, adm1, code = codes.split('.', 2)
             try:
                 admin1 = self.admin1_codes[country_id][adm1]
             except KeyError:
