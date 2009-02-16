@@ -5,14 +5,12 @@
 from math import sin, cos, acos, radians
 
 from django.core.cache import cache
-#from django.contrib.gis.db import models
-from django.db import connection, models
-from django.utils.safestring import mark_safe
+from django.db import connection
+from django.contrib.gis.db import models
 from django.utils.translation import ugettext, get_language
 from django.conf import settings
 
-
-from decorators import full_cached_property, cached_property, stored_property, cache_set
+from geonames.decorators import stored_property, cache_set
 
 GLOBE_GEONAME_ID = 6295630
 
@@ -62,90 +60,13 @@ def get_geo_translate_func():
 
 geo_translate_func = get_geo_translate_func()
 
-class GeonameGISHelper(object):
-    def near_point(self, latitude, longitude, kms, order):
-        raise NotImplementedError
-
-    def aprox_tz(self, latitude, longitude):
-        cursor = connection.cursor()
-        flat = float(latitude)
-        flng = float(longitude)
-        for diff in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1):
-            minlat = flat - diff * 10
-            maxlat = flat + diff * 10
-            minlng = flng - diff
-            maxlng = flng + diff
-            tz = self.box_tz(cursor, minlat, maxlat, minlng, maxlng)
-            if tz:
-                return tz
-
-        return None
-
-    def box_tz(self, cursor, minlat, maxlat, minlng, maxlng):
-        raise NotImplementedError
-
-class PgSQLGeonameGISHelper(GeonameGISHelper):
-    def box(self, minlat, maxlat, minlng, maxlng):
-        return 'SetSRID(MakeBox2D(MakePoint(%s, %s), MakePoint(%s, %s)), 4326)' % \
-            (minlng, minlat, maxlng, maxlat)
-
-    def near_point(self, latitude, longitude, kms, order):
-        cursor = connection.cursor()
-        point = 'Transform(SetSRID(MakePoint(%s, %s), 4326), 32661)' % (longitude, latitude)
-        ord = ''
-        if order:
-            ord = 'ORDER BY distance(%s, gpoint_meters)' % point
-        cursor.execute('SELECT %(fields)s, distance(%(point)s, gpoint_meters) ' \
-                'FROM geoname WHERE fcode NOT IN (%(excluded)s) AND ' \
-                'ST_DWithin(%(point)s, gpoint_meters, %(meters)s)' \
-                '%(order)s' %  \
-            {   
-                'fields': Geoname.select_fields(),
-                'point': point,
-                'excluded': "'PCLI', 'PCL', 'PCLD', 'CONT'",
-                'meters': kms * 1000,
-                'order': ord,
-            }
-        )
-
-        return [(Geoname(*row[:-1]), row[-1]) for row in cursor.fetchall()]
-
-    def box_tz(self, cursor, minlat, maxlat, minlng, maxlng):
-        print('SELECT timezone_id FROM geoname WHERE ST_Within(gpoint, %(box)s) ' \
-            'AND timezone_id IS NOT NULL LIMIT 1' % \
-            {
-                'box': self.box(minlat, maxlat, minlng, maxlng),
-            }
-        )
-        cursor.execute('SELECT timezone_id FROM geoname WHERE ST_Within(gpoint, %(box)s) ' \
-            'AND timezone_id IS NOT NULL LIMIT 1' % \
-            {
-                'box': self.box(minlat, maxlat, minlng, maxlng),
-            }
-        )
-        row = cursor.fetchone()
-        if row:
-            return Timezone.objects.get(pk=row[0])
-
-        return None
-
-GIS_HELPERS = {
-    'postgresql_psycopg2': PgSQLGeonameGISHelper,
-    'postgresql': PgSQLGeonameGISHelper,
-}
-
-try:
-    GISHelper = GIS_HELPERS[settings.DATABASE_ENGINE]()
-except KeyError:
-    print 'Sorry, your database backend is not supported by the Geonames application'
-
 class Geoname(models.Model):
     id = models.IntegerField(primary_key=True)
     name = models.CharField(max_length=200, db_index=True)
     ascii_name = models.CharField(max_length=200)
     latitude = models.DecimalField(max_digits=20, decimal_places=17)
     longitude = models.DecimalField(max_digits=20, decimal_places=17)
-    #gpoint = models.PointField()
+    point = models.PointField(null=True, blank=True)
     fclass = models.CharField(max_length=1, db_index=True)
     fcode = models.CharField(max_length=10, db_index=True)
     country = models.ForeignKey('Country', db_index=True, related_name='geoname_set')
@@ -160,7 +81,7 @@ class Geoname(models.Model):
     timezone = models.ForeignKey('Timezone', null=True)
     moddate = models.DateField()
 
-#    objects = models.GeoManager()
+    objects = models.GeoManager()
 
     class Meta:
         db_table = 'geoname'
@@ -212,7 +133,6 @@ class Geoname(models.Model):
             return None
         return self.get_parent
 
-    @cached_property
     def get_parent(self):
 
         if self.fcode == 'CONT':
@@ -240,7 +160,7 @@ class Geoname(models.Model):
 
         return None
 
-    @full_cached_property
+    @stored_property
     def hierarchy(self):
         hier = []
         parent = self.parent
@@ -283,25 +203,15 @@ class Geoname(models.Model):
 
         return Geoname.objects.none()
 
-    @full_cached_property
+    @stored_property
     def children(self):
         cset = self.get_children()
         l = list(cset or [])
         l.sort(cmp=lambda x,y: cmp(x.i18n_name, y.i18n_name))
         return l
 
-    @property
-    def reluri(self):
-        if not self.is_globe():
-            return 'location/%d/' % self.id
-        return ''
-
-    @property
-    def link(self):
-        return mark_safe('<a href="/%s">%s</a>' % (self.reluri, self.i18n_name))
-
-    @staticmethod
-    def biggest(lset):
+    @classmethod
+    def biggest(cls, lset):
         codes = [ '', 'CONT', 'PCLI', 'ADM1', 'ADM2', 'ADM3', 'ADM4', 'PPL']
         for c in codes:
             for item in lset:
@@ -313,9 +223,9 @@ class Geoname(models.Model):
         except IndexError:
             return None
 
-    @staticmethod
-    def globe():
-        return Geoname.objects.get(pk=GLOBE_GEONAME_ID)
+    @classmethod
+    def globe(cls):
+        return cls.objects.get(pk=GLOBE_GEONAME_ID)
 
     def is_globe(self):
         return self.id == GLOBE_GEONAME_ID
@@ -341,71 +251,14 @@ class Geoname(models.Model):
 
         return False
 
-    @staticmethod
-    def query(q, index, max_count=10):
-        def location_results_order(x, y):
-            codes = { '': 0, 'CONT': 1, 'PCLI': 2, 'ADM1': 3, 'ADM2': 4, 'ADM3': 5, 'ADM4': 6, 'PPL': 7 }
-            return cmp(codes.get(x.fcode, 20), codes.get(y.fcode, 20)) or cmp(x.population, y.population)
-
-        terms = q.split()
-        if len(terms) == 1:
-            set = Geoname.name_search.query(q).on_index(index)
-            result_set = list(set)
-            result_set.sort(cmp=location_results_order)
-            return result_set[:max_count]
-
-        result_set = Geoname.name_search.query(q).on_index(index)
-        if result_set.count() > 0:
-            result_set = list(result_set)
-            #result_set.sort(cmp=location_results_order)
-            result_set.sort(cmp=lambda x,y: cmp(len(x.name), len(y.name)))
-            return result_set[:max_count]
-
-        result_set = list(result_set)
-        sets = []
-        for term in terms:
-            sets.append(Geoname.name_search.query(term).on_index(index)[0:100])
-
-        set = {}
-        biggest = [Geoname.biggest(rset) for rset in sets]
-        r = range(0, len(terms))
-        for i in r:
-            for item in sets[i]:
-                for j in [j for j in r if j != i]:
-                    if biggest[j] and biggest[j].contains(item):
-                        set[item.id] = item
-        result_set += set.values()
-        result_set.sort(cmp=location_results_order)
-        return result_set[:max_count]
-
     def distance(self, other):
         return Geoname.distance_points(self.latitude, self.longitude, other.latitude, other.longitude)
 
-    def near(self, kms=20, order=True):
-        try:
-            return Geoname.near_point(self.latitude, self.longitude, kms, order)[1:]
-        except IndexError:
-            return Geoname.objects.none()
-
-    @staticmethod
-    def select_fields():
-        return 'id, name, ascii_name, latitude, longitude, fclass, fcode,' \
-                ' country_id, cc2, admin1_id, admin2_id, admin3_id, ' \
-                ' admin4_id, population, elevation, gtopo30, timezone_id, moddate'
-
-    @staticmethod
-    def distance_points(lat1, lon1, lat2, lon2, is_rad=False):
+    @classmethod
+    def distance_points(cls, lat1, lon1, lat2, lon2, is_rad=False):
         if not is_rad:
             lat1, lon1, lat2, lon2 = map(lambda x: radians(float(x)), (lat1, lon1, lat2, lon2))
         return 6378.7 * acos(sin(lat1) * sin(lat2) + cos(lat1) * cos(lat2) * cos(lon2 - lon1))
-
-    @staticmethod
-    def near_point(latitude, longitude, kms=20, order=True):
-        return GISHelper.near_point(latitude, longitude, kms, order)
-
-    @staticmethod
-    def aprox_tz(latitude, longitude):
-        return GISHelper.aprox_tz(latitude, longitude)
 
 class GeonameAlternateName(models.Model):
     id = models.IntegerField(primary_key=True)
@@ -473,7 +326,7 @@ class Admin1Code(models.Model):
     code = models.CharField(max_length=5)
     name = models.TextField()
     ascii_name = models.TextField()
-
+    geom = models.GeometryField(null=True, blank=True)
     class Meta:
         db_table = 'admin1_code'
 
@@ -484,7 +337,7 @@ class Admin2Code(models.Model):
     code = models.CharField(max_length=30)
     name = models.TextField()
     ascii_name = models.TextField()
-
+    geom = models.GeometryField(null=True, blank=True)
     class Meta:
         db_table = 'admin2_code'
 
@@ -496,7 +349,7 @@ class Admin3Code(models.Model):
     code = models.CharField(max_length=30)
     name = models.TextField()
     ascii_name = models.TextField()
-
+    geom = models.GeometryField(null=True, blank=True)
     class Meta:
         db_table = 'admin3_code'
 
@@ -509,7 +362,7 @@ class Admin4Code(models.Model):
     code = models.CharField(max_length=30)
     name = models.TextField()
     ascii_name = models.TextField()
-
+    geom = models.GeometryField(null=True, blank=True)
     class Meta:
         db_table = 'admin4_code'
 

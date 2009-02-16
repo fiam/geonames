@@ -1,15 +1,11 @@
-#!/usr/bin/python
-
-# This file is part of Django-Geonames
-# Copyright (c) 2008, Alberto Garcia Hierro
-# See LICENSE file for details
-
 import os
 import sys
 from optparse import OptionParser
 from warnings import filterwarnings
 from getpass import getpass
 from datetime import date
+from django.conf import settings
+from django.core.management.base import BaseCommand
 
 FILES = [
     'http://download.geonames.org/export/dump/allCountries.zip',
@@ -59,13 +55,13 @@ class GeonamesImporter(object):
         pass
 
     def last_row_id(self, table=None, pk=None):
-        raise NotImplementedError('This is a generic importer use one of the subclasses')
+        raise NotImplementedError('This is a generic importer, use one of the subclasses')
 
     def get_db_conn(self):
-        raise NotImplementedError('This is a generic importer use one of the subclasses')
+        raise NotImplementedError('This is a generic importer, use one of the subclasses')
 
     def set_import_date(self):
-        raise NotImplementedError('This is a generic importer use one of the subclasses')
+        raise NotImplementedError('This is a generic importer, use one of the subclasses')
 
     def fetch(self):
         try:
@@ -495,7 +491,6 @@ class PsycoPg2Importer(GeonamesImporter):
     def insert_dummy_records(self):
         self.cursor.execute("UPDATE geoname SET country_id='' WHERE country_id IN (' ', '  ')")
         self.cursor.execute("INSERT INTO country VALUES ('', '', -1, '', 'No country', 'No capital', 0, 0, '', '', '', '', '', '', '', '', 6295630)")
-        #self.cursor.execute("INSERT INTO country VALUES ('CS', '_CS', 0, '', 'To be split', 'No capital', 0, 0, '', '', '', 6295630)")
         self.cursor.execute("INSERT INTO continent VALUES('', 'No continent', 6295630)")
 
     def begin(self):
@@ -528,31 +523,8 @@ IMPORTERS = {
     'postgresql_psycopg2': PsycoPg2Importer,
 }
 
-def main():
-#    filterwarnings('error')
-
-    parser = OptionParser()
-
-    parser.add_option('-s', '--settings', action='store', type='string',
-            dest='settings', default='settings')
-    parser.add_option('-t', '--tmpdir', action='store', type='string',
-            dest='tmpdir', default='tmp')
-
-    (options, args) = parser.parse_args(sys.argv)
-
-    prg_name = sys.argv[0]
-    if prg_name[0] == '.':
-        prg_name = prg_name[1:]
-    app_dir = os.path.dirname(os.getcwd() + '/' + prg_name)
-    app_dir = app_dir.replace('//', '/')
-    proj_dir = '/'.join(app_dir.split('/')[:-1])
-    sys.path.append(proj_dir)
-
-    proj_settings = __import__(options.settings)
-    from django.core.management import setup_environ
-    setup_environ(proj_settings)
-    from django.conf import settings
-
+def main(options):
+    options = {'tmpdir':'geonames_temp'} #TODO: Make this a proper option
     try:
         importer = IMPORTERS[settings.DATABASE_ENGINE]
     except KeyError:
@@ -564,7 +536,7 @@ def main():
         user=settings.DATABASE_USER,
         password=settings.DATABASE_PASSWORD,
         db=settings.DATABASE_NAME,
-        tmpdir=options.tmpdir)
+        tmpdir=options['tmpdir'])
 
     imp.fetch()
     imp.get_db_conn()
@@ -572,5 +544,8 @@ def main():
     imp.set_import_date()
     imp.cleanup()
 
-if __name__ == '__main__':
-    main()
+class Command(BaseCommand):
+    help = "Geonames import command."
+
+    def handle(self, *args, **options):
+        main(options)
